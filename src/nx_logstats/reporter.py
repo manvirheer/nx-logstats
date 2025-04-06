@@ -7,17 +7,38 @@ It supports different output formats and destinations.
 
 import json
 import logging
-from typing import Dict, Any, Optional, TextIO
+from typing import Dict, Any
 from datetime import datetime
 
-from rich.console import Console
+from rich.console import Console, Group
 from rich.table import Table
 from rich.panel import Panel
 from rich.text import Text
+from rich.columns import Columns
 
 # Set up logger
 logger = logging.getLogger(__name__)
+# TODO: For Future, we can add a custom formatter to the logger to include timestamps and other details. Also, give an option to output to a file.
 console = Console()
+
+
+def format_timestamp(dt: datetime) -> str:
+    # Format the timestamp with full month name.
+    return dt.strftime("%Y-%B-%d %H:%M:%S")
+
+
+def color_for_status(status: int) -> str:
+    # Return a color based on the status code category.
+    if 200 <= status < 300:
+        return "green"
+    elif 300 <= status < 400:
+        return "blue"
+    elif 400 <= status < 500:
+        return "yellow"
+    elif 500 <= status < 600:
+        return "red"
+    return "white"
+
 
 class Reporter:
     """
@@ -28,132 +49,146 @@ class Reporter:
     
     def __init__(self, summary: Dict[str, Any]):
         self.summary = summary
+
+    def _build_general_stats_table(self) -> Table:
+        table = Table(show_header=False, box=None)
+        table.add_column("Label")
+        table.add_column("Value")
+        table.add_row("Total Requests:", f"{self.summary['total_requests']}")
+        table.add_row("Average Response Size:", f"{self.summary.get('avg_response_size', 0):.2f} bytes")
+        table.add_row("Generated at:", f"{format_timestamp(datetime.now())}")
+        return table
+
+    def _build_status_table(self) -> Table:
+        table = Table(title="HTTP Status Code Distribution", border_style="dim")
+        table.add_column("Status", justify="center")
+        table.add_column("Count", justify="right")
+        table.add_column("Percentage", justify="right")
+        status_codes = self.summary.get('status_codes', {})
+        if status_codes:
+            for status, count in sorted(status_codes.items()):
+                try:
+                    status_int = int(status)
+                except ValueError:
+                    status_int = 0
+                status_color = color_for_status(status_int)
+                colored_status = f"[{status_color}]{status}[/]"
+                percentage = f"{count/self.summary['total_requests']*100:.1f}%"
+                table.add_row(colored_status, str(count), percentage)
+        else:
+            table.add_row("No data", "-", "-")
+        return table
+
+    def _build_http_methods_table(self) -> Table:
+        table = Table(title="HTTP Method Distribution", border_style="dim")
+        table.add_column("Method", justify="center")
+        table.add_column("Count", justify="right")
+        table.add_column("Percentage", justify="right")
+        methods = self.summary.get('http_methods', {})
+        if methods:
+            for method, count in sorted(methods.items(), key=lambda x: x[1], reverse=True):
+                percentage = f"{count/self.summary['total_requests']*100:.1f}%"
+                table.add_row(method, str(count), percentage)
+        else:
+            table.add_row("No data", "-", "-")
+        return table
+
+    def _build_top_endpoints_table(self) -> Table:
+        table = Table(title="Top Requested Endpoints", border_style="dim")
+        table.add_column("Rank", justify="center")
+        table.add_column("Endpoint")
+        table.add_column("Count", justify="right")
+        table.add_column("Percentage", justify="right")
+        endpoints = self.summary.get('top_endpoints', [])
+        if endpoints:
+            for i, (endpoint, count) in enumerate(endpoints, 1):
+                percentage = f"{count/self.summary['total_requests']*100:.1f}%"
+                rank_str = f"[bold green]{i}[/]" if i == 1 else f"[dim]{i}[/]"
+                table.add_row(rank_str, endpoint, str(count), percentage)
+        else:
+            table.add_row("-", "No data", "-", "-")
+        return table
+
+    def _build_hourly_table(self) -> Table:
+        table = Table(title="Request Volume by Hour", border_style="dim")
+        table.add_column("Hour", justify="center")
+        table.add_column("Count", justify="right")
+        hourly = self.summary.get('hourly_request_volume', {})
+        if hourly:
+            for hour in sorted(hourly.keys()):
+                count = hourly[hour]
+                table.add_row(f"{hour:02d}:00 - {hour:02d}:59", str(count))
+        else:
+            table.add_row("No data", "-")
+        return table
+
+    def _build_report_panel(self) -> Panel:
+        # Assemble all components into a single panel.
+        general_stats = self._build_general_stats_table()
+        status_table = self._build_status_table()
+        method_table = self._build_http_methods_table()
+        endpoints_table = self._build_top_endpoints_table()
+        hourly_table = self._build_hourly_table()
         
+        stats_panel = Panel(general_stats, title="General Statistics", border_style="blue")
+        tables_row1 = Columns([status_table, method_table])
+        tables_row2 = Columns([hourly_table, endpoints_table])
+        report_group = Group(stats_panel, tables_row1, tables_row2)
+        report_title = "NGINX ACCESS LOG ANALYSIS REPORT"
+        return Panel(report_group, title=report_title, border_style="blue", title_align="center")
+
     def generate_text_report(self) -> str:
-        # Generate a human-readable text report using Rich formatting
+        # Generate a human-readable text report using Rich formatting.
         try:
-            report = []
-            
-            # Use Rich to generate prettier tables and panels
-            title = Text("NGINX ACCESS LOG ANALYSIS REPORT", style="bold white on blue")
-            subtitle = Text(f"Generated at: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
-            
-            # General stats panel
-            general_stats = f"Total Requests: {self.summary['total_requests']}\n"
-            avg_size = self.summary.get('avg_response_size', 0)
-            general_stats += f"Average Response Size: {avg_size:.2f} bytes"
-            
-            # Status codes table
-            status_table = Table(title="HTTP Status Code Distribution")
-            status_table.add_column("Status", style="cyan")
-            status_table.add_column("Count", style="magenta")
-            status_table.add_column("Percentage", style="green")
-            
-            status_codes = self.summary.get('status_codes', {})
-            if status_codes:
-                for status, count in sorted(status_codes.items()):
-                    percentage = f"{count/self.summary['total_requests']*100:.1f}%"
-                    status_table.add_row(str(status), str(count), percentage)
-            else:
-                status_table.add_row("No data", "-", "-")
-                
-            # HTTP methods table
-            method_table = Table(title="HTTP Method Distribution")
-            method_table.add_column("Method", style="cyan")
-            method_table.add_column("Count", style="magenta")
-            method_table.add_column("Percentage", style="green")
-            
-            methods = self.summary.get('http_methods', {})
-            if methods:
-                for method, count in sorted(methods.items(), key=lambda x: x[1], reverse=True):
-                    percentage = f"{count/self.summary['total_requests']*100:.1f}%"
-                    method_table.add_row(method, str(count), percentage)
-            else:
-                method_table.add_row("No data", "-", "-")
-                
-            # Top endpoints table
-            endpoint_table = Table(title="Top Requested Endpoints")
-            endpoint_table.add_column("Rank", style="cyan")
-            endpoint_table.add_column("Endpoint", style="blue")
-            endpoint_table.add_column("Count", style="magenta")
-            endpoint_table.add_column("Percentage", style="green")
-            
-            endpoints = self.summary.get('top_endpoints', [])
-            if endpoints:
-                for i, (endpoint, count) in enumerate(endpoints, 1):
-                    percentage = f"{count/self.summary['total_requests']*100:.1f}%"
-                    endpoint_table.add_row(str(i), endpoint, str(count), percentage)
-            else:
-                endpoint_table.add_row("-", "No data", "-", "-")
-                
-            # Hourly distribution table
-            hourly_table = Table(title="Request Volume by Hour")
-            hourly_table.add_column("Hour", style="cyan")
-            hourly_table.add_column("Count", style="magenta")
-            
-            hourly = self.summary.get('hourly_request_volume', {})
-            if hourly:
-                for hour in sorted(hourly.keys()):
-                    count = hourly[hour]
-                    hourly_table.add_row(f"{hour:02d}:00 - {hour:02d}:59", str(count))
-            else:
-                hourly_table.add_row("No data", "-")
-            
-            # Generate the rich console output as a string
-            str_io = console.capture()
-            console.print(Panel(title, subtitle=subtitle))
-            console.print(Panel(general_stats, title="General Statistics"))
-            console.print(status_table)
-            console.print(method_table)
-            console.print(endpoint_table)
-            console.print(hourly_table)
-            console.print(Panel("END OF REPORT"))
-            output = str_io.get()
-            
-            return output
-            
+            from io import StringIO
+            from contextlib import redirect_stdout
+
+            output = StringIO()
+            with redirect_stdout(output):
+                local_console = Console(file=output, width=100)
+                title = Text("NGINX ACCESS LOG ANALYSIS REPORT", style="bold blue")
+                subtitle = Text(f"Generated at: {format_timestamp(datetime.now())}")
+                local_console.print(Panel(title, subtitle=subtitle, border_style="blue"))
+                local_console.print(self._build_report_panel())
+                local_console.print(Panel("END OF REPORT", border_style="dim"))
+            return output.getvalue()
         except Exception as e:
             logger.error(f"Error generating text report: {e}")
             return f"Error generating report: {e}"
-            
+
     def generate_json_report(self) -> str:
-        # Generate a JSON-formatted report
+        # Generate a JSON-formatted report.
         try:
-            # Add timestamp to the report
             report_data = {
-                "generated_at": datetime.now().isoformat(),
+                "generated_at": format_timestamp(datetime.now()),
                 "metrics": self.summary
             }
             return json.dumps(report_data, indent=2, default=str)
         except Exception as e:
             logger.error(f"Error generating JSON report: {e}")
             return json.dumps({"error": str(e)})
-            
+
     def output_to_file(self, filepath: str, format: str = "text") -> bool:
-        # Write the report to a file
+        # Write the report to a file.
         try:
             with open(filepath, 'w') as f:
                 if format.lower() == 'json':
                     f.write(self.generate_json_report())
                 else:
                     f.write(self.generate_text_report())
-            logger.info(f"Report successfully written to {filepath}")
+            logger.debug(f"Report successfully written to {filepath}")
             return True
         except Exception as e:
             logger.error(f"Error writing report to file {filepath}: {e}")
             return False
-            
+
     def print_to_console(self, format: str = "text") -> None:
-        # Print the report to the console using Rich when appropriate
+        # Print the report to the console.
         try:
             if format.lower() == 'json':
-                # For JSON, use Rich's syntax highlighting
-                json_data = self.generate_json_report()
-                console.print_json(json_data)
+                console.print_json(self.generate_json_report())
             else:
-                # Rich formatted report is already prepared by generate_text_report
-                # We're just printing the captured output
-                print(self.generate_text_report())
+                console.print(self._build_report_panel())
         except Exception as e:
             logger.error(f"Error printing report to console: {e}")
             console.print(f"[bold red]Error generating report:[/] {e}")

@@ -13,14 +13,68 @@ from typing import List, Optional
 
 from rich.logging import RichHandler
 
-from nx_logstats.parser import parse_log_file, is_likely_nginx_log
+from nx_logstats.parser import LogParser
 from nx_logstats.analysis import LogAnalyzer
 from nx_logstats.reporter import Reporter
 
-def configure_logging(verbose: bool = False) -> None:
-    # Configure logging level and format with Rich formatting
-    log_level = logging.DEBUG if verbose else logging.INFO
-    # Use Rich for prettier logging output
+# Define a list of CLI option definitions.
+CLI_OPTIONS = [
+    {
+        "flags": ["logfile"],
+        "params": {
+            "help": "Path to the NGINX access log file to analyze"
+        }
+    },
+    {
+        "flags": ["-o", "--output"],
+        "params": {
+            "help": "Path to write the output report (default: print to stdout)",
+            "default": None
+        }
+    },
+    {
+        "flags": ["-f", "--format"],
+        "params": {
+            "help": "Output format (text or json)",
+            "choices": ["text", "json"],
+            "default": "text"
+        }
+    },
+    {
+        "flags": ["-n", "--top-n"],
+        "params": {
+            "help": "Number of top endpoints to include in the report",
+            "type": int,
+            "default": 10
+        }
+    },
+    {
+        "flags": ["-v", "--verbose"],
+        "params": {
+            "help": "Increase verbosity: -v for INFO, -vv for DEBUG. Default shows only errors.",
+            "action": "count",
+            "default": 0
+        }
+    },
+    {
+        "flags": ["--ignore-errors"],
+        "params": {
+            "help": "Ignore malformed log lines and continue processing",
+            "action": "store_true"
+        }
+    }
+]
+
+def configure_logging(verbosity: int = 0) -> None:
+    # Set logging level based on verbosity flag:
+    # 0: errors only; 1: info and above; 2 or more: debug and above.
+    if verbosity >= 2:
+        log_level = logging.DEBUG
+    elif verbosity == 1:
+        log_level = logging.INFO
+    else:
+        log_level = logging.ERROR
+
     logging.basicConfig(
         level=log_level,
         format="%(message)s",
@@ -29,53 +83,18 @@ def configure_logging(verbose: bool = False) -> None:
     )
 
 def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
-    # Parse command-line arguments
+    # Parse command-line arguments using the CLI_OPTIONS mapping.
     parser = argparse.ArgumentParser(
         description="NGINX log file analyzer - extracts and reports on key metrics",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     
-    parser.add_argument(
-        "logfile",
-        help="Path to the NGINX access log file to analyze"
-    )
-    
-    parser.add_argument(
-        "-o", "--output",
-        help="Path to write the output report (default: print to stdout)",
-        default=None
-    )
-    
-    parser.add_argument(
-        "-f", "--format",
-        help="Output format (text or json)",
-        choices=["text", "json"],
-        default="text"
-    )
-    
-    parser.add_argument(
-        "-n", "--top-n",
-        help="Number of top endpoints to include in the report",
-        type=int,
-        default=10
-    )
-    
-    parser.add_argument(
-        "-v", "--verbose",
-        help="Enable verbose output",
-        action="store_true"
-    )
-    
-    parser.add_argument(
-        "--ignore-errors",
-        help="Ignore malformed log lines and continue processing",
-        action="store_true"
-    )
+    for option in CLI_OPTIONS:
+        parser.add_argument(*option["flags"], **option["params"])
     
     return parser.parse_args(args)
 
 def main(args: Optional[List[str]] = None) -> int:
-    # Main entry point for the CLI
     parsed_args = parse_args(args)
     configure_logging(parsed_args.verbose)
     
@@ -83,15 +102,19 @@ def main(args: Optional[List[str]] = None) -> int:
     logger.info(f"Starting analysis of {parsed_args.logfile}")
     
     try:
-        # Check if file is likely an NGINX log
-        if not is_likely_nginx_log(parsed_args.logfile):
+        parser_instance = LogParser(parsed_args.logfile, ignore_errors=parsed_args.ignore_errors)
+        if not parser_instance.is_likely_nginx_log():
             logger.warning(f"File {parsed_args.logfile} does not appear to be an NGINX log file.")
             logger.warning("Note: This tool only supports standard NGINX access log format")
             
-        # Parse log file
-        log_entries, error_count = parse_log_file(parsed_args.logfile, 
-                                                 ignore_errors=parsed_args.ignore_errors)
+        log_entries, error_count = parser_instance.parse()
         
+        # Abort if there were malformed lines and ignore_errors is False
+        if error_count > 0 and not parsed_args.ignore_errors:
+            logger.error(f"Encountered {error_count} malformed lines while processing. Aborting.")
+            logging.error("Use --ignore-errors to skip malformed lines.")
+            return 1
+            
         if not log_entries:
             logger.error("No valid log entries found in the log file")
             if error_count > 0:
@@ -103,11 +126,9 @@ def main(args: Optional[List[str]] = None) -> int:
         if error_count > 0:
             logger.warning(f"Skipped {error_count} invalid entries during parsing")
         
-        # Analyze log entries
         analyzer = LogAnalyzer(log_entries)
         summary = analyzer.get_summary(top_n=parsed_args.top_n)
         
-        # Generate and output report
         reporter = Reporter(summary)
         
         if parsed_args.output:
