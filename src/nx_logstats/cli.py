@@ -124,7 +124,6 @@ def main(args: Optional[List[str]] = None) -> int:
             logger.error("No valid log entries found in the log file")
             if error_count > 0:
                 logger.error(f"{error_count} lines were malformed or unrecognized")
-                logger.error("Try using --ignore-errors to suppress these warnings")
             return 1
             
         logger.info(f"Successfully parsed {len(log_entries)} log entries")
