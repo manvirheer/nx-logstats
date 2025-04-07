@@ -11,7 +11,7 @@ def test_cli_with_valid_log(tmp_path):
     log_file = tmp_path / "valid_simple_logs.log"
     log_file.write_text(log_content)
     
-    # Run CLI with --ignore-errors and increased verbosity.
+    # Run CLI increased verbosity.
     args = [str(log_file), "-v"]
     exit_code = main(args)
     assert exit_code == 0

@@ -28,7 +28,7 @@ class LogAnalyzer:
         self.df = self.create_dataframe() if entries else pd.DataFrame()
 
     def create_dataframe(self) -> pd.DataFrame:
-        # Build the DataFrame using list comprehensions for simplicity
+        # Building the DataFrame using list comprehensions 
         data = {
             'ip': [entry.ip for entry in self.entries],
             'timestamp': [entry.timestamp for entry in self.entries],
