@@ -25,24 +25,18 @@ NGINX_LOG_PATTERN = (
 )
 
 # Acceptable file extensions
-ACCEPTABLE_EXTENSIONS = ['.log', '.txt', '.text', '.log.gz', '.log.1']
+# TODO: Automatically set output format to JSON when writing to a json file, removing the need for the -f json flag.
+ACCEPTABLE_EXTENSIONS = ['.log', '.txt', '.text']
 
+# Message to display when a log line doesn't match the expected format.
+EXPECTED_FORMAT_MESSAGE = (
+    'Accepted format is: <ip> - - [<dd/Mon/YYYY:HH:MM:SS>] "<HTTP_METHOD> <path> HTTP/1.1" <status> <bytes>'
+)
 
 class LogEntry:
-    """
-    Parsed log entry with structured fields.
-    Handles standard NGINX access log format with IP, timestamp, request, status, and bytes.
-    """
-    def __init__(
-        self,
-        ip: str,
-        timestamp: datetime,
-        request: str,
-        method: str,
-        path: str,
-        status: int,
-        bytes_sent: int
-    ):
+    """Simple container for a parsed log entry."""
+    def __init__(self, ip: str, timestamp: datetime, request: str, method: str,
+                 path: str, status: int, bytes_sent: int):
         self.ip = ip
         self.timestamp = timestamp
         self.request = request
@@ -51,190 +45,128 @@ class LogEntry:
         self.status = status
         self.bytes_sent = bytes_sent
 
-
 class LogParser:
-    """
-    Encapsulates the functionality to parse an NGINX log file.
-    This class handles file type checking, line parsing, and aggregate processing.
-    """
+    """Handles parsing of an NGINX log file."""
     def __init__(self, filepath: str, ignore_errors: bool = False):
         self.filepath = filepath
         self.ignore_errors = ignore_errors
         self.entries: List[LogEntry] = []
-        self.error_count: int = 0
+        self.error_count = 0
 
-    # Defining a static method to parse the timestamp
     @staticmethod
     def parse_timestamp(timestamp_str: str) -> Optional[datetime]:
-        """
-        Parse a timestamp string into a datetime object.
-        Uses the standard NGINX timestamp format.
-        """
+        # Extract the date and time, ignoring timezone.
         try:
-            # Extract the date and time part, ignoring timezone if present
             date_time_part = timestamp_str.split()[0]
             return datetime.strptime(date_time_part, "%d/%b/%Y:%H:%M:%S")
-        except (ValueError, IndexError) as e:
+        except Exception as e:
             logger.warning(f"Failed to parse timestamp: {timestamp_str}. Error: {e}")
             return None
 
     def validate_log_entry(self, data: dict) -> bool:
-        """
-        Perform additional validation on the parsed data to ensure it's a valid log entry.
-        
-        Args:
-            data: Dictionary containing the parsed log entry fields
-            
-        Returns:
-            bool: True if the entry passes validation, False otherwise
-        """
-        # Check that required fields are present and non-empty
-        required_fields = ['ip', 'timestamp', 'request', 'method', 'path', 'status', 'bytes']
-        for field in required_fields:
-            if field not in data or not data[field]:
+        # Check that all required fields are present and non-empty.
+        for field in ['ip', 'timestamp', 'request', 'method', 'path', 'status', 'bytes']:
+            if not data.get(field):
                 logger.debug(f"Missing required field: {field}")
                 return False
-        
+            
         # Validate IP address format
-        ip_pattern = r'^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])$|^([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}$'
+        ip_pattern = (
+            r'^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}'
+            r'([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])$|'
+            r'^([0-9a-fA-F]{1,4}:){7}[0-9a-fA-F]{1,4}$'
+        )
+
         if not re.match(ip_pattern, data['ip']):
             logger.debug(f"Invalid IP address format: {data['ip']}")
             return False
-            
-        # Validate status code (should be 3 digits)
+        
+        # Validate status code (should be 3 digits).
         if not re.match(r'^\d{3}$', str(data['status'])):
             logger.debug(f"Invalid status code: {data['status']}")
             return False
-            
         return True
 
     def parse_line(self, line: str) -> Optional[LogEntry]:
-        """
-        Parse a single log line into a structured LogEntry object.
-        
-        Args:
-            line: A single line from the log file
-            
-        Returns:
-            LogEntry object if parsing succeeds, None otherwise
-        """
-        try:
-            match = re.match(NGINX_LOG_PATTERN, line)
-            if not match:
-                logger.debug(f"Line does not match NGINX log pattern: {line}")
-                return None
+        # Match the line against the NGINX log pattern.
+        match = re.fullmatch(NGINX_LOG_PATTERN, line)
 
-            data = match.groupdict()
-            
-            # Additional validation
-            if not self.validate_log_entry(data):
-                logger.debug(f"Failed validation for line: {line}")
-                return None
-
-            timestamp = self.parse_timestamp(data['timestamp'])
-            if not timestamp:
-                logger.debug(f"Failed to parse timestamp in line: {line}")
-                return None
-
-            bytes_sent = int(data['bytes']) if data['bytes'] != '-' else 0
-            
-            return LogEntry(
-                ip=data['ip'],
-                timestamp=timestamp,
-                request=data['request'],
-                method=data['method'],
-                path=data['path'],
-                status=int(data['status']),
-                bytes_sent=bytes_sent
-            )
-        except Exception as e:
-            logger.error(f"Error parsing line: {line}. Error: {e}")
+        if not match:
+            logger.debug(f"Line does not match pattern: {line}")
             return None
+        
+        data = match.groupdict()
+
+        # Validate the extracted data.
+        if not self.validate_log_entry(data):
+            logger.debug(f"Failed validation for line: {line}")
+            return None
+        
+        # Parse the timestamp.
+        timestamp = LogParser.parse_timestamp(data['timestamp'])
+
+        if not timestamp:
+            logger.debug(f"Failed to parse timestamp in line: {line}")
+            return None
+        
+        # Convert the bytes field, handling the '-' case.
+        bytes_sent = int(data['bytes']) if data['bytes'] != '-' else 0
+
+        return LogEntry(
+            ip=data['ip'],
+            timestamp=timestamp,
+            request=data['request'],
+            method=data['method'],
+            path=data['path'],
+            status=int(data['status']),
+            bytes_sent=bytes_sent
+        )
 
     def is_likely_nginx_log(self) -> bool:
-        """
-        Check if the file is likely to be an NGINX log based on its extension and sample content.
-        
-        Returns:
-            bool: True if the file appears to be an NGINX log, False otherwise
-        """
-        # First check the file extension
+        # Check if the file extension is acceptable.
         filename = os.path.basename(self.filepath)
-        extension_match = False
-        for ext in ACCEPTABLE_EXTENSIONS:
-            if filename.endswith(ext):
-                extension_match = True
-                break
-                
-        if not extension_match:
-            logger.debug(f"File extension not recognized as a log file: {filename}")
+
+        if not any(filename.endswith(ext) for ext in ACCEPTABLE_EXTENSIONS):
+            logger.debug(f"File extension not accepted: {filename}")
             return False
-            
-        # Then check the content
-        try:
-            with open(self.filepath, 'r') as file:
-                # Read up to 10 non-empty lines
-                sample_lines = []
-                for _ in range(10):
-                    line = file.readline().strip()
-                    if line:
-                        sample_lines.append(line)
-                
-                if not sample_lines:
-                    logger.warning("File is empty")
-                    return False
-                    
-                # Check if at least 50% of lines match the NGINX log pattern
-                match_count = sum(1 for line in sample_lines if re.match(NGINX_LOG_PATTERN, line))
-                match_percentage = (match_count / len(sample_lines)) * 100
-                
-                if match_percentage >= 50:
-                    logger.debug(f"{match_percentage:.1f}% of sample lines match NGINX log pattern")
-                    return True
-                else:
-                    logger.debug(f"Only {match_percentage:.1f}% of sample lines match NGINX log pattern")
-                    return False
-                    
-        except Exception as e:
-            logger.warning(f"Unable to check content of {self.filepath}: {e}")
-            # Don't accept based solely on extension anymore
+        
+        # Check if the file is not empty.
+        if os.path.getsize(self.filepath) == 0:
+            logger.debug(f"File is empty: {self.filepath}")
             return False
+        
+        return True
 
     def parse(self) -> Tuple[List[LogEntry], int]:
-        """
-        Parse the log file and return a tuple containing:
-          - A list of valid LogEntry objects.
-          - The count of malformed or unrecognized lines.
-        """
+        # Check if the file is likely an NGINX log file.
+        if not self.is_likely_nginx_log():
+            logger.error(f"File {self.filepath} is not a valid NGINX log")
+            return [], 0
+        
+        # Open and parse the file line by line.
         try:
-            # First check if this is likely an NGINX log file
-            if not self.is_likely_nginx_log():
-                logger.error(f"File {self.filepath} does not appear to be a valid NGINX log file")
-                logger.error("If you believe this is a valid NGINX log file, check the format and try again")
-                return [], 0
-                
             with open(self.filepath, 'r') as file:
                 for line_num, line in enumerate(file, 1):
                     line = line.strip()
                     if not line:
                         continue
-
                     entry = self.parse_line(line)
                     if entry:
                         self.entries.append(entry)
                     else:
                         self.error_count += 1
-                        if not self.ignore_errors:
-                            logger.warning(f"Skipping malformed line {line_num}: {line[:80]}...")
+                        # Warn once about malformed lines.
+                        if self.error_count == 1:
+                            logger.warning(f"Skipping malformed lines (e.g., line {line_num}). {EXPECTED_FORMAT_MESSAGE}")
         except FileNotFoundError:
             logger.error(f"Log file not found: {self.filepath}")
         except PermissionError:
-            logger.error(f"Permission denied when accessing: {self.filepath}")
+            logger.error(f"Permission denied for file: {self.filepath}")
         except Exception as e:
-            logger.error(f"Unexpected error when opening log file: {e}")
+            logger.error(f"Error reading file {self.filepath}: {e}")
 
-        if self.error_count > 0:
-            if self.ignore_errors:
-                logger.info(f"Ignored {self.error_count} malformed lines while processing")
-                
+        # Log info if errors were ignored.
+        if self.error_count > 0 and self.ignore_errors:
+            logger.info(f"Ignored {self.error_count} malformed lines")
+
         return self.entries, self.error_count

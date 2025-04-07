@@ -17,8 +17,8 @@ from rich.text import Text
 from rich.columns import Columns
 
 # Set up logger
-logger = logging.getLogger(__name__)
 # TODO: For Future, we can add a custom formatter to the logger to include timestamps and other details. Also, give an option to output to a file.
+logger = logging.getLogger(__name__)
 console = Console()
 
 
@@ -56,6 +56,11 @@ class Reporter:
         table.add_column("Value")
         table.add_row("Total Requests:", f"{self.summary['total_requests']}")
         table.add_row("Average Response Size:", f"{self.summary.get('avg_response_size', 0):.2f} bytes")
+        
+        # Add a row for ignored lines if present.
+        if self.summary.get("ignored_lines", 0) > 0:
+            table.add_row("[bold red]Ignored Lines[/]", f"[bold red]{self.summary['ignored_lines']}[/]")
+        
         table.add_row("Generated at:", f"{format_timestamp(datetime.now())}")
         return table
 
@@ -139,6 +144,7 @@ class Reporter:
 
     def generate_text_report(self) -> str:
         # Generate a human-readable text report using Rich formatting.
+        # TODO: Add ability to create graphs for distributions.
         try:
             from io import StringIO
             from contextlib import redirect_stdout

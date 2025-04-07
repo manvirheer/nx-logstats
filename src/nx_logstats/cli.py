@@ -18,6 +18,8 @@ from nx_logstats.analysis import LogAnalyzer
 from nx_logstats.reporter import Reporter
 
 # Define a list of CLI option definitions.
+# TODO: Allow filtering of log entries based on specific time ranges.
+# TODO: Showcase if a same IP address is making too many requests in a short time.
 CLI_OPTIONS = [
     {
         "flags": ["logfile"],
@@ -85,7 +87,7 @@ def configure_logging(verbosity: int = 0) -> None:
 def parse_args(args: Optional[List[str]] = None) -> argparse.Namespace:
     # Parse command-line arguments using the CLI_OPTIONS mapping.
     parser = argparse.ArgumentParser(
-        description="NGINX log file analyzer - extracts and reports on key metrics",
+        description="NGINX log file analyzer - extracts and reports on key metrics. Accepted format is: <ip> - - [<dd/Mon/YYYY:HH:MM:SS>] \"<HTTP_METHOD> <path> HTTP/1.1\" <status> <bytes>",
         formatter_class=argparse.ArgumentDefaultsHelpFormatter
     )
     
@@ -103,6 +105,8 @@ def main(args: Optional[List[str]] = None) -> int:
     
     try:
         parser_instance = LogParser(parsed_args.logfile, ignore_errors=parsed_args.ignore_errors)
+        
+        # Check if the file is a valid NGINX log file
         if not parser_instance.is_likely_nginx_log():
             logger.warning(f"File {parsed_args.logfile} does not appear to be an NGINX log file.")
             logger.warning("Note: This tool only supports standard NGINX access log format")
@@ -115,6 +119,7 @@ def main(args: Optional[List[str]] = None) -> int:
             logging.error("Use --ignore-errors to skip malformed lines.")
             return 1
             
+        # If no valid log entries were found, log an error and exit
         if not log_entries:
             logger.error("No valid log entries found in the log file")
             if error_count > 0:
@@ -123,12 +128,19 @@ def main(args: Optional[List[str]] = None) -> int:
             return 1
             
         logger.info(f"Successfully parsed {len(log_entries)} log entries")
+        
         if error_count > 0:
             logger.warning(f"Skipped {error_count} invalid entries during parsing")
         
+        # Perform analysis on the parsed log entries
         analyzer = LogAnalyzer(log_entries)
         summary = analyzer.get_summary(top_n=parsed_args.top_n)
         
+        # If using --ignore-errors and there were malformed lines, include that in the summary.
+        if parsed_args.ignore_errors and error_count > 0:
+            summary["ignored_lines"] = error_count
+            
+        # Generate the report based on the analysis
         reporter = Reporter(summary)
         
         if parsed_args.output:
